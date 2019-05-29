@@ -1,0 +1,6 @@
+word,freq
+bird of prey,2
+family and household,1
+plaster of paris,2
+post mortem examination,1
+st vitus's dance,2

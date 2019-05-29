@@ -1,0 +1,4 @@
+word,freq
+cause of death,3
+duty to warn,2
+return to work,1

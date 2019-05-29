@@ -1,0 +1,160 @@
+---
+title: "Sherlock Holmes Tidy Text"
+author: "Giorgio Maria Di Nunzio"
+date: "10/12/2018"
+output: html_document
+---
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Mining the Adventures of Sherlock Holmes
+
+In this document, we describe the source code that we use to analyze the text of the complete canon of Conan Doyle's Adventured of Sherlock Holmes; in particular, we are interested in extracting the medical terms that appear in these books in order to compare the medical terminology in the literature of Conan Doyle with modern medical terms.
+
+### Loading The Complete Canon
+
+We use the complete list of 4 novels and 56 short stories of made available on the website [The complete Sherlock Holmes Canon](https://sherlock-holm.es). There are 60 files in the *data/CompleteCanon* directory, each file corresponds to a Sherlock Holmes story:
+
+```{r show_files, echo=FALSE}
+path_name <- "./data/CompleteCanon/"
+file_names <- list.files(path_name)
+file_names
+```
+
+We use tibbles to store the information about each book; we also use the dplyr package to make operations on tibbles:
+
+```{r create_books}
+library(tibble)
+library(dplyr)
+
+# create books
+books <- tibble(text = character(), title = character())
+
+#for (file_name in file_names) {
+for (file_name in file_names) {
+  
+  # read book
+  book <- tibble(text = readLines(paste0(path_name, "/", file_name)))
+  
+  book <- book %>% 
+    mutate(title = substr(file_name, 1, 4)) %>% # add title 
+    slice(-grep(pattern = "Arthur Conan Doyle", x = book$text)) %>% # remove author
+    slice(1:grep(pattern = "-------", x = book$text)) # remove copyright part
+  
+  # merge books
+  books <- bind_rows(books, book)
+  
+}
+```
+
+We use the tidytext package to perform text analyses; in particular, the creation of n-grams (uni-, bi-, andtri-grams) that will be used to find matches in the MeSH dictionary:
+
+```{r create_ngrams, eval=TRUE}
+library(tidytext)
+
+doyle_unigrams <- books %>%
+  unnest_tokens(unigram, text, token = "ngrams", n = 1)
+
+unigram <- doyle_unigrams %>%  
+  count(unigram, sort = TRUE) %>%
+  rename(word = unigram, freq = n)
+#unigram
+
+doyle_bigrams <- books %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+bigram <- doyle_bigrams %>%  
+  count(bigram, sort = TRUE) %>%
+  rename(word = bigram, freq = n)
+#bigram
+
+doyle_trigrams <- books %>%
+  unnest_tokens(trigram, text, token = "ngrams", n = 3)
+
+trigram <- doyle_trigrams %>%  
+  count(trigram, sort = TRUE) %>%
+  rename(word = trigram, freq = n)
+#trigram
+
+```
+
+The number of unigrams, bigrams and trigrams in the texts is:
+
+```{r unigram, eval=TRUE}
+cat(paste0("number of unigrams:  ", nrow(unigram), "\n"))
+cat(paste0("number of bigrams:  ", nrow(bigram), "\n"))
+cat(paste0("number of trigrams: ", nrow(trigram), "\n"))
+```
+
+Example of most frequent bigrams in the text:
+
+```{r, eval=TRUE}
+head(bigram)
+```
+
+### Medical Termbase
+
+In order to match and extract the medical terms from the text, we use the [Medical Subject Headings (MeSH)](https://www.ncbi.nlm.nih.gov/mesh) database. This database is a controlled vocabulary thesaurus prepared and maintained by the US National Library of Medicine for indexing articles in [PubMED](https://www.ncbi.nlm.nih.gov/pubmed/).
+
+We use the package provided by the [Bioconductor](https://bioconductor.org) which is a set of annotation maps describing the entire MeSH database ([MeSH ORA](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-015-0453-z)). 
+
+```{r load_db, eval=TRUE}
+library("MeSH.db")
+```
+
+In order to query the database, we need the RSQLite package. The query selects MeSH terms as well as synonyms. Many synonyms, near-synonyms, and closely related concepts are included as entry terms in the database to help users find the most relevant MeSH descriptor for the concept they are seeking.
+
+```{r query_db, eval=TRUE}
+library("RSQLite")
+
+# get terms and synonyms 
+select_mesh_syn <- "SELECT DISTINCT MESHTERM, SYNONYM FROM DATA"
+res_mesh_syn <- dbGetQuery(dbconn(MeSH.db), select_mesh_syn)
+
+res_mesh_syn  <- res_mesh_syn %>% 
+  mutate(SYN_CLEAN = sapply(strsplit(x = res_mesh_syn$SYNONYM, # split syns
+                                     split = "\\|"), 
+                            FUN = function(x) x[1])) %>% # get first element
+  dplyr::select(MESHTERM, SYN_CLEAN)
+
+# get mesh terms and syns
+mesh_terms <- tolower(unique(res_mesh_syn$MESHTERM))
+
+# remove dots
+mesh_terms <- gsub(pattern = "\\.", replacement = "", x = mesh_terms)
+
+mesh_syns <- tolower(res_mesh_syn$SYN_CLEAN)
+
+# remove dots
+mesh_syns <- gsub(pattern = "\\.", replacement = "", x = mesh_syns)
+```
+
+### Matching MeSH Terms
+
+In this last phase, we want to match terms (uni-, bi-, tri-grams) that appear in the Sherlock Holmes books with those that are in the MeSH database. 
+
+```{r find_terms, eval=FALSE}
+# find unigrams in terms and synonyms
+uni_terms <- unigram[which(unigram$word %in% mesh_terms), ]
+uni_syns <- unigram[which(unigram$word %in% mesh_syns), ]
+
+# find bigrams in terms and synonyms
+big_terms <- bigram[which(bigram$word %in% mesh_terms), ]
+big_syns <- bigram[which(bigram$word %in% mesh_syns), ]
+
+# find trigrams in terms and synonyms
+tri_terms <- trigram[which(trigram$word %in% mesh_terms), ]
+tri_syns <- trigram[which(trigram$word %in% mesh_syns), ]
+
+# save results
+write.csv2(uni_terms[order(uni_terms$word), ], file = "./data/output/uni_terms.txt", quote = F, row.names = F)
+write.csv2(uni_syns[order(uni_syns$word), ], file = "./data/output/uni_syns.txt", quote = F, row.names = F)
+write.csv(big_terms[order(big_terms$word), ], file = "./data/output/big_terms.txt", quote = F, row.names = F)
+write.csv(big_syns[order(big_syns$word), ], file = "./data/output/big_syns.txt", quote = F, row.names = F)
+write.csv(tri_terms[order(tri_terms$word), ], file = "./data/output/tri_terms.txt", quote = F, row.names = F)
+write.csv(tri_syns[order(tri_syns$word), ], file = "./data/output/tri_syns.txt", quote = F, row.names = F)
+```
+
+
